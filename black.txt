@@ -1,0 +1,245 @@
+Per-class threadpool vs event loop class
+
+Per-class threadpool spawns it's own internal threads and is fully responsible
+for their management. AsyncEpoll class follows this pattern. In this case
+I can keep both Epoll class and Flag class instances in the AsyncEpoll class.
+The class can be used as a base class with handleEvents pure virtual method
+or it might might accept a callback as well as the size of the threadpool in
+the constructor. Anyways the general idea is this:
+
+class asyncepoll {
+    constructor;
+    destructor;
+
+    run;
+    stop;
+
+    add;
+    del;
+    mod;
+
+private:
+    epoll;
+    eventfd;
+    threads;
+}
+
+eventloop {
+    while(true) {
+        get events with epoll_wait
+        run over events
+        if eventfd is signalled:
+            die
+        else:
+            process event
+    }
+}
+
+
+run() {
+    create threads
+    make them enter the event loop
+}
+
+stop() {
+    eventfd_write();
+    loop over threads
+        join() to make sure all of them terminated;
+    eventfd_read();
+}
+
+*****************************************************
+
+
+eventloop {
+    consturctor;
+    destructor;
+
+    join;
+    stop;
+
+    add;
+    del;
+    mod;
+}
+
+There are no threads here, threads, if they wish, can join.
+This is more flexible than the first approach.
+The epoll_loop class must be thread-safe, both epoll and eventfd are thread safe by default
+but stop() and join() methods must be synchronized.
+*************************************************************
+
+Method (1)
+
+A single lock for both join and stop call it lock.
+thread counter numthreads = 0 in the beginning.
+boolean to indicate that the event loop is "running"
+a condition call it cond
+
+join() {
+    lock(lock);
+    while(!running)
+        cond_wait(cond, lock) or return idk
+    
+    numthreads++
+    unlock(lock);
+
+    block above is "atomic" (not really but)
+
+    while(true) {
+        handle events
+        if signalled
+            break form while loop
+        else
+            process signal
+    }
+
+    lock(lock);
+    numthreads--;
+    if(numthreads  == 0) 
+        //refresh the eventloop
+        running = true
+        eventfd_read
+
+        // launch again
+        cond_signal(condition);
+        unlock()
+        return;
+
+    // we are not last bro
+    unlock()
+}
+
+stop() {
+    lock(lock);
+    running = false; // block new threads
+    eventfd_write;  // signal
+    unlock(lock);
+}
+
+In the approach above, stop() method is nonblocking (obviously not, but almost)
+*******************************************************************************8
+
+Method (2)
+
+This approach gonna block the "stopper" thread.
+We will need a semaphore here.
+Initially sem value is 0.
+
+join() {
+    lock();
+    numthreads++;
+    unlock();
+
+    exactly the same eventloop as in the method 1
+
+    ok, we broke out.
+    sem_post();
+}
+
+stop() {
+    lock();
+    while(numthreads != 0) {
+        sem_wait();
+    }
+
+    all the threads are done.
+    unlock();
+}
+
+****************************************************
+
+method (1) for pause-resume mechanism---------------------------------------|
+
+pause() {
+    lock();
+    while(active) {
+        deactivate = true;
+        cond_wait(); <------------------------------------ this might block for too long, since it depends on epoll event occurance. 
+    }
+
+    ok, now I know that no worker thread processes the events
+    i can exit. 
+
+    unlock();
+}
+
+
+handle_events() {
+    lock();
+    if(deactivate) {
+        active = false;
+        // do the deactivation
+        signal();
+        unlock();
+        return;
+    }
+
+    process normally.
+
+    unlock();
+}
+
+---------------------------------------------------------------------------------
+
+method (2) for pause-resume mechanism -------------------------------------------------------|
+
+pause() {
+
+    lock()
+    
+    // deactivate the fd
+    - ok, can I now safely delete the entry?
+    - Not really, because of THE interval. 
+
+
+    unlock()
+
+
+
+}
+
+handle_events() {
+
+    the problem is this interval between epoll_wait and lock()
+    >--------------------------------------------------------<
+    deactivation atomically doesn't guaranatee that the void* is not used by another thread, 
+    you see I am here, I have no lock yet, but I have the void*. 
+
+
+    lock()
+
+
+    unlock()
+
+
+
+}
+
+:/ somewhat lame
+------------------------------------------------------------------------------
+
+Method (3)
+
+leverage thread-safe queue.
+
+Notice that our class has a kind of drawback --------> callbacks are general, what if some messages are very very important?
+so they need different handling? Yes, a general callback might also tackle with this using some ifs and elses but 
+it would be nice to have message-specific callbacks.
+
+So, I need a data structure that keeps both callback and message, call it ?, idk, yet.
+Anyways, it's clear that I will have to keep thread-safe queue of this type.
+The methods above, have a general drawback, they are somewhat delayed, so when you notify the thread to stop
+it might send all the messages in the queue and then stop. It would be better to make it a bit more precise.
+So I can instead have the term of terminal message. like a boolean or something and communicate this way. 
+
+So method (3) is asynchronous.
+I like this method. Avoids further locks.
+However, I still need to make all the methods thread-safe.
+
+
+---------------------------------------------------------------->ok
+now we have got a plan.
+
+
+
