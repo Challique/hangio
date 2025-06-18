@@ -29,12 +29,9 @@ int main(int argc, char** argv) {
         }
 
         sleep(1);
-
-
     }
 
-
-
+    // TODO: This is incomplete. 
 
     return 0;
 }
